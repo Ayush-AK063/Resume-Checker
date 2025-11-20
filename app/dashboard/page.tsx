@@ -1,33 +1,82 @@
+"use client";
+
+import { useState, useEffect } from "react";
 import ResumeCard from "@/components/ResumeCard";
 import { Resume } from "@/types";
-import { supabaseServer } from "@/supabase/serverClient";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Upload, FileText, Plus, Sparkles } from "lucide-react";
+import { Upload, FileText, Plus, Sparkles, Loader2 } from "lucide-react";
+import SimpleBulkEvaluationModal, { EvaluationResult } from "@/components/SimpleBulkEvaluationModal";
 
-async function getData(): Promise<Resume[]> {
-  try {
-    const { data, error } = await supabaseServer
-      .from("resumes")
-      .select("id, file_name, created_at")
-      .order("created_at", { ascending: false });
+export default function Dashboard() {
+  const [resumes, setResumes] = useState<Resume[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  // Use a plain object for evaluation results so React state updates reliably trigger renders
+  const [evaluationResults, setEvaluationResults] = useState<Record<string, EvaluationResult>>({});
+  // Incrementing key to signal resume cards to refresh their data
+  const [refreshKey, setRefreshKey] = useState(0);
 
-    if (error) {
-      console.error("Error fetching resumes:", error);
-      return [];
+  useEffect(() => {
+    fetchResumes();
+  }, []);
+
+  const fetchResumes = async () => {
+    try {
+      const response = await fetch('/api/getResumes');
+      if (response.ok) {
+        const data = await response.json();
+        setResumes(data);
+        // Do not clear evaluationResults here — preserve any in-progress or just-completed results
+        // setEvaluationResults(new Map());
+      }
+    } catch (error) {
+      console.error('Error fetching resumes:', error);
+    } finally {
+      setIsLoading(false);
     }
+  };
 
-    return data || [];
-  } catch (error) {
-    console.error("Error fetching resumes:", error);
-    return [];
+  const refreshResumeData = () => {
+    // Refresh resume data without clearing evaluation results or showing loading
+    fetchResumes();
+  };
+
+  const handleEvaluationComplete = (results: EvaluationResult[]) => {
+    // Merge incoming results into existing evaluationResults object
+    setEvaluationResults((prev) => {
+      const next = { ...prev };
+      results.forEach((result) => {
+        const existing = next[result.resumeId];
+
+        // If we already have a final result for this resume, don't overwrite with a transient state
+        if (existing && (existing.status === 'pass' || existing.status === 'fail' || existing.status === 'error')) {
+          return;
+        }
+
+        // Otherwise set/overwrite with the latest result
+        next[result.resumeId] = result;
+
+        // If this result is final, bump refreshKey so ResumeCard will re-fetch its data
+        if (result.status === 'pass' || result.status === 'fail' || result.status === 'error') {
+          setRefreshKey((k) => k + 1);
+        }
+      });
+      return next;
+    });
+  };
+
+  if (isLoading) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-gray-50 to-white p-6 flex items-center justify-center">
+        <div className="text-center">
+          <Loader2 className="h-8 w-8 animate-spin mx-auto mb-4" />
+          <p>Loading resumes...</p>
+        </div>
+      </div>
+    );
   }
-}
-
-export default async function Dashboard() {
-  const resumes = await getData();
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-50 to-white p-6">
@@ -50,6 +99,19 @@ export default async function Dashboard() {
               <Badge variant="secondary" className="px-3 py-1">
                 {resumes.length} resume{resumes.length === 1 ? '' : 's'}
               </Badge>
+            )}
+            {resumes.length > 0 && (
+              <SimpleBulkEvaluationModal 
+                resumes={resumes}
+                onEvaluationComplete={handleEvaluationComplete}
+                onRefreshNeeded={refreshResumeData}
+                trigger={
+                  <Button variant="outline" size="lg">
+                    <Sparkles className="h-4 w-4 mr-2" />
+                    Evaluate All Resumes
+                  </Button>
+                }
+              />
             )}
             <Button asChild size="lg">
               <Link href="/upload">
@@ -130,15 +192,22 @@ export default async function Dashboard() {
               <h2 className="text-xl font-semibold">Your Resumes</h2>
             </div>
             <div className="grid gap-4">
-              {resumes.map((resume: Resume) => (
-                <div key={resume.id} className="animate-in fade-in-50 duration-300">
-                  <ResumeCard resume={resume} />
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
+              {resumes.map((resume: Resume) => {
+                const evaluationResult = evaluationResults[resume.id];
+                 return (
+                   <div key={resume.id} className="animate-in fade-in-50 duration-300">
+                     <ResumeCard 
+                       resume={resume} 
+                       evaluationResult={evaluationResult}
+                       refreshKey={refreshKey}
+                     />
+                   </div>
+                 );
+               })}
+             </div>
+           </div>
+         )}
+       </div>
+     </div>
+   );
+ }
