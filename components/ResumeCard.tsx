@@ -128,9 +128,25 @@ export default function ResumeCard({ resume, evaluationResult, refreshKey }: Res
                   <Calendar className="h-3 w-3" />
                   <span>Uploaded {new Date(resume.created_at).toLocaleDateString()}</span>
                 </div>
-                <Badge variant="secondary" className="text-xs">
-                  {formatFileType(resume.file_type || null)}
-                </Badge>
+                {resume.file_type ? (
+                  <Badge variant="secondary" className="text-xs">
+                    {formatFileType(resume.file_type)}
+                  </Badge>
+                ) : resume.file_url ? (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      window.open(resume.file_url, '_blank');
+                    }}
+                    className="text-xs underline"
+                  >
+                    View Resume
+                  </Button>
+                ) : (
+                  <Badge variant="secondary" className="text-xs">Unknown</Badge>
+                )}
               </div>
               <div className="mt-3 text-xs text-muted-foreground">
                 {isExpanded ? "Showing details below" : "Click to view details and create AI evaluations"}
@@ -227,7 +243,15 @@ export default function ResumeCard({ resume, evaluationResult, refreshKey }: Res
                         <div className="space-y-2">
                           <div className="flex justify-between text-sm">
                             <span className="text-muted-foreground">Type:</span>
-                            <Badge variant="outline">{formatFileType(resumeData.file_type || null)}</Badge>
+                            {resumeData.file_type ? (
+                              <Badge variant="outline">{formatFileType(resumeData.file_type)}</Badge>
+                            ) : resumeData.file_url ? (
+                              <Button variant="ghost" size="sm" onClick={() => window.open(resumeData.file_url, '_blank')}>
+                                View Resume
+                              </Button>
+                            ) : (
+                              <Badge variant="outline">Unknown</Badge>
+                            )}
                           </div>
                           <div className="flex justify-between text-sm">
                             <span className="text-muted-foreground">Status:</span>
