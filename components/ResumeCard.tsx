@@ -103,19 +103,20 @@ export default function ResumeCard({ resume, evaluationResult, refreshKey }: Res
                   {resume.file_name}
                 </h3>
                 <div className="flex items-center space-x-2">
-                  {resume.file_url && (
+                  {resumeData?.file_url || resume.file_url ? (
                     <Button 
                       variant="ghost" 
                       size="sm" 
                       onClick={(e) => {
                         e.stopPropagation();
-                        window.open(resume.file_url, '_blank');
+                        const url = resumeData?.file_url || resume.file_url;
+                        if (url) window.open(url, '_blank');
                       }}
                       className="opacity-0 group-hover:opacity-100 transition-opacity"
                     >
                       <ExternalLink className="h-4 w-4" />
                     </Button>
-                  )}
+                  ) : null}
                   {isExpanded ? (
                     <ChevronUp className="h-4 w-4 text-muted-foreground" />
                   ) : (
@@ -132,21 +133,19 @@ export default function ResumeCard({ resume, evaluationResult, refreshKey }: Res
                   <Badge variant="secondary" className="text-xs">
                     {formatFileType(resume.file_type)}
                   </Badge>
-                ) : resume.file_url ? (
+                ) : (resumeData?.file_url || resume.file_url) ? (
                   <Button
-                    variant="ghost"
                     size="sm"
                     onClick={(e) => {
                       e.stopPropagation();
-                      window.open(resume.file_url, '_blank');
+                      const url = resumeData?.file_url || resume.file_url;
+                      if (url) window.open(url, '_blank');
                     }}
-                    className="text-xs underline"
+                    className="text-xs cursor-pointer"
                   >
                     View Resume
                   </Button>
-                ) : (
-                  <Badge variant="secondary" className="text-xs">Unknown</Badge>
-                )}
+                ) : null}
               </div>
               <div className="mt-3 text-xs text-muted-foreground">
                 {isExpanded ? "Showing details below" : "Click to view details and create AI evaluations"}
@@ -245,13 +244,11 @@ export default function ResumeCard({ resume, evaluationResult, refreshKey }: Res
                             <span className="text-muted-foreground">Type:</span>
                             {resumeData.file_type ? (
                               <Badge variant="outline">{formatFileType(resumeData.file_type)}</Badge>
-                            ) : resumeData.file_url ? (
-                              <Button variant="ghost" size="sm" onClick={() => window.open(resumeData.file_url, '_blank')}>
+                            ) : (resumeData?.file_url || resume.file_url) ? (
+                              <Button variant="ghost" size="sm" onClick={() => window.open(resumeData?.file_url || resume.file_url, '_blank')}>
                                 View Resume
                               </Button>
-                            ) : (
-                              <Badge variant="outline">Unknown</Badge>
-                            )}
+                            ) : null}
                           </div>
                           <div className="flex justify-between text-sm">
                             <span className="text-muted-foreground">Status:</span>
