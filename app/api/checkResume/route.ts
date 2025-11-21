@@ -45,6 +45,25 @@ export async function POST(req: Request): Promise<NextResponse<Evaluation | { er
       return NextResponse.json({ error: "Invalid AI response format" }, { status: 500 });
     }
 
+    // Check if the document is actually a resume
+    if (parsed.is_resume === false) {
+      console.log('Document rejected: Not a resume');
+      return NextResponse.json({ 
+        error: "This file does not appear to be a resume. Please upload a valid resume document." 
+      }, { status: 400 });
+    }
+
+    // Delete any existing evaluations for this resume to ensure only one evaluation exists
+    const { error: deleteError } = await supabaseServer
+      .from("evaluations")
+      .delete()
+      .eq("resume_id", resumeId);
+
+    if (deleteError) {
+      console.error('Error deleting previous evaluations:', deleteError);
+      // Continue anyway - don't fail the request if deletion fails
+    }
+
     const { data, error: insertError } = await supabaseServer
       .from("evaluations")
       .insert({

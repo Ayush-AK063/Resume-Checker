@@ -21,9 +21,10 @@ interface DeleteResumeButtonProps {
   resumeId: string;
   resumeName: string;
   variant?: "default" | "compact";
+  onDeleteSuccess?: () => void;
 }
 
-export default function DeleteResumeButton({ resumeId, resumeName, variant = "default" }: DeleteResumeButtonProps) {
+export default function DeleteResumeButton({ resumeId, resumeName, variant = "default", onDeleteSuccess }: DeleteResumeButtonProps) {
   const [isDeleting, setIsDeleting] = useState(false);
   const router = useRouter();
 
@@ -45,6 +46,11 @@ export default function DeleteResumeButton({ resumeId, resumeName, variant = "de
       }
 
       toast.success("Resume deleted successfully");
+      
+      // Call the callback to notify parent component
+      if (onDeleteSuccess) {
+        onDeleteSuccess();
+      }
       
       // Redirect to dashboard after successful deletion
       router.push("/dashboard");

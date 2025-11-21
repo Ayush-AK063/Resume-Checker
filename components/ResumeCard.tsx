@@ -4,11 +4,9 @@
 import { useState, useEffect } from "react";
 import { Resume, Evaluation } from "@/types";
 import { Card, CardContent } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
-import { FileText, Calendar, ExternalLink, ChevronDown, ChevronUp, Loader2 } from "lucide-react";
-import { formatFileType } from "@/utils/formatter";
+import { FileText, Calendar, ExternalLink, ChevronDown, ChevronUp } from "lucide-react";
 import DeleteResumeButton from "@/components/DeleteResumeButton";
 
 type ResumeWithEvaluations = Resume & {
@@ -23,9 +21,10 @@ interface ResumeCardProps {
     error?: string;
   };
   refreshKey?: number; // new optional prop to trigger refresh from parent
+  onDeleteSuccess?: () => void; // callback to notify parent when resume is deleted
 }
 
-export default function ResumeCard({ resume, evaluationResult, refreshKey }: ResumeCardProps) {
+export default function ResumeCard({ resume, refreshKey, onDeleteSuccess }: ResumeCardProps) {
   const [isExpanded, setIsExpanded] = useState(false);
   const [resumeData, setResumeData] = useState<ResumeWithEvaluations | null>(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -86,19 +85,24 @@ export default function ResumeCard({ resume, evaluationResult, refreshKey }: Res
   }, [refreshKey]);
 
   return (
-    <Card className="transition-all duration-200 hover:shadow-md group">
-      <CardContent className="p-6">
+    <Card className="transition-all py-4! duration-200 hover:shadow-md group">
+      <CardContent className="px-6 ">
         {/* Header Section */}
         <div className="flex items-start justify-between">
           <div 
             className="flex items-start space-x-4 flex-1 cursor-pointer"
             onClick={toggleExpanded}
           >
-            <div className="p-2 bg-primary/10 rounded-lg group-hover:bg-primary/20 transition-colors">
+            {isExpanded ? (
+                    <ChevronUp className="h-5 w-5 text-muted-foreground bg-gray-100" />
+                  ) : (
+                    <ChevronDown className="h-5 w-5 text-muted-foreground bg-gray-100" />
+                  )}
+            <div className="p-1 bg-primary/10 rounded-lg group-hover:bg-primary/20 transition-colors">
               <FileText className="h-6 w-6 text-primary" />
             </div>
             <div className="flex-1 min-w-0">
-              <div className="flex items-center justify-between mb-2">
+              <div className="flex items-center justify-between mb-1">
                 <h3 className="text-lg font-semibold text-gray-900 truncate group-hover:text-primary transition-colors">
                   {resume.file_name}
                 </h3>
@@ -114,14 +118,14 @@ export default function ResumeCard({ resume, evaluationResult, refreshKey }: Res
                       }}
                       className="opacity-0 group-hover:opacity-100 transition-opacity"
                     >
-                      <ExternalLink className="h-4 w-4" />
+                      <ExternalLink className="h-4 w-4" /><span>View</span>
                     </Button>
                   ) : null}
-                  {isExpanded ? (
+                  {/* {isExpanded ? (
                     <ChevronUp className="h-4 w-4 text-muted-foreground" />
                   ) : (
                     <ChevronDown className="h-4 w-4 text-muted-foreground" />
-                  )}
+                  )} */}
                 </div>
               </div>
               <div className="flex items-center space-x-4 text-sm text-muted-foreground">
@@ -129,7 +133,7 @@ export default function ResumeCard({ resume, evaluationResult, refreshKey }: Res
                   <Calendar className="h-3 w-3" />
                   <span>Uploaded {new Date(resume.created_at).toLocaleDateString()}</span>
                 </div>
-                {resume.file_type ? (
+                {/* {resume.file_type ? (
                   <Badge variant="secondary" className="text-xs">
                     {formatFileType(resume.file_type)}
                   </Badge>
@@ -145,9 +149,9 @@ export default function ResumeCard({ resume, evaluationResult, refreshKey }: Res
                   >
                     View Resume
                   </Button>
-                ) : null}
+                ) : null} */}
               </div>
-              <div className="mt-3 text-xs text-muted-foreground">
+              <div className="mt-1 text-xs text-muted-foreground">
                 {isExpanded ? "Showing details below" : "Click to view details and create AI evaluations"}
               </div>
             </div>
@@ -156,7 +160,7 @@ export default function ResumeCard({ resume, evaluationResult, refreshKey }: Res
           {/* Evaluation Result and Delete button */}
           <div className="flex items-center space-x-2">
             {/* Evaluation Result Badge */}
-            {(() => {
+            {/* {(() => {
               // Show bulk evaluation result if available, otherwise show persistent evaluation from database
               const currentEvaluation = evaluationResult || 
                 (resumeData?.evaluations && resumeData.evaluations.length > 0 
@@ -205,7 +209,7 @@ export default function ResumeCard({ resume, evaluationResult, refreshKey }: Res
                   )}
                 </div>
               ) : null;
-            })()}
+            })()} */}
             
             {/* Delete button - appears on hover */}
             <div className="opacity-0 group-hover:opacity-100 transition-opacity">
@@ -214,6 +218,7 @@ export default function ResumeCard({ resume, evaluationResult, refreshKey }: Res
                   resumeId={resume.id} 
                   resumeName={resume.file_name} 
                   variant="compact"
+                  onDeleteSuccess={onDeleteSuccess}
                 />
               </div>
             </div>
@@ -231,60 +236,6 @@ export default function ResumeCard({ resume, evaluationResult, refreshKey }: Res
                 </div>
               ) : resumeData ? (
                 <div className="space-y-6">
-                  {/* Overview Section */}
-                  <div>
-                    <h3 className="text-lg font-semibold mb-4 flex items-center">
-                      <FileText className="h-5 w-5 mr-2" />
-                      Overview
-                    </h3>
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                      <div className="bg-muted/50 rounded-lg p-4">
-                        <div className="space-y-2">
-                          <div className="flex justify-between text-sm">
-                            <span className="text-muted-foreground">Type:</span>
-                            {resumeData.file_type ? (
-                              <Badge variant="outline">{formatFileType(resumeData.file_type)}</Badge>
-                            ) : (resumeData?.file_url || resume.file_url) ? (
-                              <Button variant="ghost" size="sm" onClick={() => window.open(resumeData?.file_url || resume.file_url, '_blank')}>
-                                View Resume
-                              </Button>
-                            ) : null}
-                          </div>
-                          <div className="flex justify-between text-sm">
-                            <span className="text-muted-foreground">Status:</span>
-                            <Badge variant="default">Active</Badge>
-                          </div>
-                        </div>
-                      </div>
-                      <div className="bg-muted/50 rounded-lg p-4">
-                        <div className="space-y-2">
-                          <div className="flex justify-between text-sm">
-                            <span className="text-muted-foreground">Date:</span>
-                            <span>{new Date(resumeData.created_at).toLocaleDateString()}</span>
-                          </div>
-                          <div className="flex justify-between text-sm">
-                            <span className="text-muted-foreground">Time:</span>
-                            <span>{new Date(resumeData.created_at).toLocaleTimeString()}</span>
-                          </div>
-                        </div>
-                      </div>
-                      <div className="bg-muted/50 rounded-lg p-4">
-                        <div className="space-y-2">
-                          <div className="flex justify-between text-sm">
-                            <span className="text-muted-foreground">Evaluations:</span>
-                            <Badge variant="default">{resumeData.evaluations?.length || 0}</Badge>
-                          </div>
-                          <div className="flex justify-between text-sm">
-                            <span className="text-muted-foreground">Status:</span>
-                            <Badge variant={resumeData.evaluations?.length ? "default" : "secondary"}>
-                              {resumeData.evaluations?.length ? "Evaluated" : "Pending"}
-                            </Badge>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-
                   {/* Content Section */}
                   <div>
                     <h3 className="text-lg font-semibold mb-4">Resume Content</h3>
@@ -301,72 +252,6 @@ export default function ResumeCard({ resume, evaluationResult, refreshKey }: Res
                       </div>
                     )}
                   </div>
-
-                  {/* Evaluations Section - Show Only Latest Evaluation */}
-                  {resumeData.evaluations && resumeData.evaluations.length > 0 && (() => {
-                    // Get the latest evaluation (most recent by created_at)
-                    const latestEvaluation = resumeData.evaluations.sort((a, b) => {
-                      const dateA = a.created_at ? new Date(a.created_at).getTime() : 0;
-                      const dateB = b.created_at ? new Date(b.created_at).getTime() : 0;
-                      return dateB - dateA;
-                    })[0];
-                    
-                    return (
-                      <div>
-                        <h3 className="text-lg font-semibold mb-4">Latest Evaluation Result</h3>
-                        <div className="bg-muted/50 rounded-lg p-4">
-                          <div className="flex items-center justify-between mb-3">
-                            <h4 className="font-medium">
-                              {latestEvaluation.criteria?.role || 'Evaluation'}
-                            </h4>
-                            <div className="flex items-center space-x-2">
-                              <Badge variant="default">
-                                Score: {latestEvaluation.fit_score}/100
-                              </Badge>
-                              <Badge variant={latestEvaluation.fit_score >= 50 ? "default" : "destructive"}>
-                                {latestEvaluation.fit_score >= 50 ? "Pass" : "Fail"}
-                              </Badge>
-                            </div>
-                          </div>
-                          
-                          {/* Missing Skills */}
-                          {latestEvaluation.missing_skills && latestEvaluation.missing_skills.length > 0 && (
-                            <div className="mb-3">
-                              <p className="text-sm font-medium mb-2 text-muted-foreground">Missing Skills:</p>
-                              <div className="flex flex-wrap gap-2">
-                                {latestEvaluation.missing_skills.map((skill, index) => (
-                                  <Badge key={index} variant="destructive" className="text-xs">
-                                    {skill}
-                                  </Badge>
-                                ))}
-                              </div>
-                            </div>
-                          )}
-                          
-                          {/* Feedback */}
-                          {latestEvaluation.feedback && (
-                            <div>
-                              <p className="text-sm font-medium mb-2 text-muted-foreground">Feedback:</p>
-                              <p className="text-sm text-muted-foreground leading-relaxed">
-                                {latestEvaluation.feedback}
-                              </p>
-                            </div>
-                          )}
-                          
-                          {/* Evaluation Date */}
-                          {latestEvaluation.created_at && (
-                            <div className="mt-3 pt-3 border-t border-border">
-                              <p className="text-xs text-muted-foreground">
-                                Evaluated on {new Date(latestEvaluation.created_at).toLocaleDateString()} at {new Date(latestEvaluation.created_at).toLocaleTimeString()}
-                              </p>
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    );
-                  })()}
-
-
                 </div>
               ) : (
                 <div className="text-center py-8 text-muted-foreground">

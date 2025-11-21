@@ -67,6 +67,17 @@ export default function Dashboard() {
     });
   };
 
+  const handleResumeDeleted = (resumeId: string) => {
+    // Immediately remove the resume from the UI
+    setResumes((prev) => prev.filter((r) => r.id !== resumeId));
+    // Also remove any evaluation results for this resume
+    setEvaluationResults((prev) => {
+      const next = { ...prev };
+      delete next[resumeId];
+      return next;
+    });
+  };
+
   if (isLoading) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-gray-50 to-white p-6 flex items-center justify-center">
@@ -123,7 +134,7 @@ export default function Dashboard() {
         </div>
 
         {/* Stats Cards */}
-        {resumes.length > 0 && (
+        {/* {resumes.length > 0 && (
           <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
             <Card>
               <CardContent className="p-6">
@@ -161,7 +172,7 @@ export default function Dashboard() {
               </CardContent>
             </Card>
           </div>
-        )}
+        )} */}
 
         {/* Resume Grid */}
         {resumes.length === 0 ? (
@@ -200,6 +211,7 @@ export default function Dashboard() {
                        resume={resume} 
                        evaluationResult={evaluationResult}
                        refreshKey={refreshKey}
+                       onDeleteSuccess={() => handleResumeDeleted(resume.id)}
                      />
                    </div>
                  );
