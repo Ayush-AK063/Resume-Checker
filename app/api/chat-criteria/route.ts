@@ -1,59 +1,72 @@
 import { NextResponse } from "next/server";
-import { generateWithGemini, generateWithTools } from "@/lib/llm/gemini";
-import { Criteria } from "@/types";
+import { generateWithTools } from "@/lib/llm/gemini";
+import { supabaseServer } from "@/supabase/serverClient";
 
 interface ChatMessage {
-  role: 'user' | 'bot';
+  role: "user" | "bot";
   content: string;
 }
 
 interface RequestBody {
   messages: ChatMessage[];
-  resumeCount: number;
 }
 
-const SYSTEM_PROMPT = `You are a resume evaluation assistant. You help evaluate resumes based on job criteria.
+interface EvaluationResult {
+  resumeId: string;
+  resumeName: string;
+  score: number;
+  feedback: string;
+  missing_skills: string[];
+  status: "pass" | "fail";
+  extractedCriteria: {
+    role: string;
+    skills: string[];
+  };
+}
 
-CONVERSATION RULES:
+const SYSTEM_PROMPT = `You are a resume evaluation assistant. 
 
-1. GREETINGS (Respond warmly):
-   - "Hi", "Hello", "Hey", "Good morning", "Good afternoon"
-   → Respond: "Hi! I'm here to help you evaluate resumes. Just tell me what job role or skills you're looking for, and I'll evaluate all the resumes immediately."
+RULES:
+1. GREETINGS → Respond warmly
+2. EVALUATION REQUESTS → Call get_resumes tool to fetch all resumes, then I will give you the data
+3. OTHER QUESTIONS → Politely reject
 
-2. EVALUATION REQUESTS (Call function immediately, NO text):
-   - User mentions job role: "Node.js developer", "React engineer"
-   - User mentions skills: "Python", "AWS", "TypeScript"  
-   - Keywords: evaluate, find, check, assess, need, want, looking for
-   → IMMEDIATELY call evaluate_resumes function (extract role/skills, NO TEXT RESPONSE)
+WORKFLOW:
+- When user mentions job requirements (like "I want Node.js developer"), call get_resumes tool
+- I will fetch resumes and send you the complete data
+- You will evaluate ALL resumes at once and return results in JSON format
 
-3. OTHER QUESTIONS (Reject politely):
-   - Questions about you: "What can you do?", "How do you work?"
-   - Off-topic: Weather, jokes, news, unrelated topics
-   → Respond: "I can only help with resume evaluation. Please tell me what job role or skills you're looking for."
+EVALUATION INSTRUCTIONS:
+When I provide resume data:
+1. First check if each document is a VALID RESUME or not
+   - A valid resume should contain: work experience, education, skills, or professional information
+   - If document is NOT a resume (random text, articles, code, etc.), mark it clearly
 
-EXAMPLES:
+2. Evaluate ALL documents and return a JSON array with this EXACT structure:
+{
+  "evaluations": [
+    {
+      "resumeId": "resume_id_here",
+      "resumeName": "filename",
+      "is_resume": true or false,
+      "fit_score": 0-100,
+      "feedback": "short feedback explaining score or why it's not a resume",
+      "missing_skills": ["skill1", "skill2"],
+      "status": "pass or fail (pass if score >= 50)"
+    }
+  ]
+}
 
-User: "Hi"
-→ TEXT: "Hi! I'm here to help you evaluate resumes. Just tell me what job role or skills you're looking for, and I'll evaluate all the resumes immediately."
-
-User: "Hello, how are you?"
-→ TEXT: "Hello! I'm doing great. I'm here to help you evaluate resumes. Just tell me what job role or skills you're looking for!"
-
-User: "I want a Node.js developer"
-→ CALL FUNCTION evaluate_resumes (role="Node.js Developer", skills=["Node.js"]) - NO TEXT
-
-User: "What can you do?"
-→ TEXT: "I can only help with resume evaluation. Please tell me what job role or skills you're looking for."
-
-CRITICAL:
-- Greetings = Friendly response, encourage evaluation
-- Evaluation requests = Call function ONLY (no text)
-- Other questions = Polite rejection`;
+If "is_resume" is false, set:
+- fit_score: 0
+- feedback: "Not a valid resume document"
+- missing_skills: []
+- status: "fail"`;
 
 export async function POST(req: Request) {
   try {
     const body: RequestBody = await req.json();
-    const { messages, resumeCount } = body;
+    const { messages } = body;
 
     if (!messages || messages.length === 0) {
       return NextResponse.json(
@@ -62,368 +75,228 @@ export async function POST(req: Request) {
       );
     }
 
-    // Build conversation history for the LLM (exclude the last user message as we'll send it separately)
-    const previousMessages = messages.slice(0, -1);
-    const conversationHistory = previousMessages.map(msg => {
-      if (msg.role === 'user') {
-        return { role: 'user', content: msg.content };
-      } else {
-        return { role: 'assistant', content: msg.content };
-      }
-    });
+    const conversationHistory = messages.slice(0, -1).map((msg) => ({
+      role: msg.role === "user" ? ("user" as const) : ("assistant" as const),
+      content: msg.content,
+    }));
 
-    // Get the latest user message
     const latestUserMessage = messages[messages.length - 1].content;
 
-    // Check if this is an evaluation request (aggressive detection)
-    const evaluationKeywords = /\b(evaluate|assessment|assess|find|check|analyze|screen|look|looking|search|searching|need|want|require|seeking|hire|hiring|developer|engineer|designer|analyst|scientist|manager|architect|programmer|candidate|applicant|start|begin)\b/i;
-    const isEvaluationIntent = evaluationKeywords.test(latestUserMessage);
-    
-    console.log('📊 Message intent analysis:', { 
-      message: latestUserMessage, 
-      isEvaluationIntent,
-      keywords: latestUserMessage.match(evaluationKeywords) 
-    });
-
-    // SUPER AGGRESSIVE: If evaluation intent detected, bypass LLM and force tool call
-    if (isEvaluationIntent) {
-      console.log('🚀 FORCING IMMEDIATE EVALUATION - bypassing LLM completely');
-      
-      // Extract criteria directly from the user message
-      const forcedCriteria = extractCriteriaFromText(latestUserMessage, messages);
-      
-      if (forcedCriteria) {
-        console.log('✅ Forced criteria extraction successful:', forcedCriteria);
-        
-        // Return as if tool was called
-        return NextResponse.json({
-          response: '', // Empty response - frontend will handle messaging
-          criteria: forcedCriteria,
-          autoStart: true  // Always auto-start when we force it
-        });
-      }
-    }
-
-    // Define tools available to the AI (following Gemini's function calling format)
+    // Only ONE tool - get_resumes
     const tools = [
       {
-        name: "evaluate_resumes",
-        description: "Immediately trigger resume evaluation. Call this function whenever user mentions evaluation, finding candidates, checking resumes, or describes job requirements. Extract role and skills from context. DO NOT generate text when calling this - just call it.",
+        name: "get_resumes",
+        description:
+          "Fetch all resumes from the database to evaluate against user requirements",
         parameters: {
           type: "object",
-          properties: {
-            role: {
-              type: "string",
-              description: "The job role/title (e.g., 'Node.js Developer', 'Data Scientist'). Use 'Not specified' if unclear."
-            },
-            skills: {
-              type: "array",
-              description: "Array of required skills (e.g., ['React', 'Node.js']). Use ['General'] if no specific skills mentioned.",
-              items: {
-                type: "string"
-              }
-            },
-            job_description: {
-              type: "string",
-              description: "Summary of job requirements from the conversation"
-            }
-          },
-          required: ["role", "skills", "job_description"]
-        }
-      }
+          properties: {},
+          required: [],
+        },
+      },
     ];
 
-    // Create the prompt for Gemini with tool calling
-    const prompt = `${SYSTEM_PROMPT}
+    // Step 1: LLM decides what to do
+    const result = await generateWithTools(
+      `${SYSTEM_PROMPT}\n\nUser: "${latestUserMessage}"`,
+      conversationHistory,
+      tools
+    );
 
-Context: The recruiter is evaluating ${resumeCount} resume${resumeCount === 1 ? '' : 's'}.
-
-Latest user message: "${latestUserMessage}"
-
-ANALYZE THE MESSAGE:
-
-1. Is it a greeting? (hi, hello, hey, good morning, etc.)
-   → YES: Respond with warm greeting + encourage evaluation
-   Example: "Hi! I'm here to help you evaluate resumes. Just tell me what job role or skills you're looking for!"
-
-2. Is it an evaluation request? (mentions role, skills, or keywords: evaluate, find, need, want, looking for)
-   → YES: Call evaluate_resumes function IMMEDIATELY (extract role/skills, NO TEXT)
-
-3. Is it something else? (questions about you, off-topic)
-   → YES: Politely redirect to evaluation
-   Example: "I can only help with resume evaluation. Please tell me what job role or skills you're looking for."
-
-NOW: Analyze "${latestUserMessage}" and respond accordingly.`;
-
-    // Call Gemini with tool support
-    let result;
-    try {
-      result = await generateWithTools(prompt, conversationHistory, tools);
-      console.log('generateWithTools result:', {
-        hasResponse: !!result.response,
-        responseLength: result.response?.length || 0,
-        hasToolCalls: !!result.toolCalls,
-        toolCallsLength: result.toolCalls?.length || 0
-      });
-    } catch (geminiError) {
-      console.error("Gemini API error in chat-criteria:", geminiError);
-      console.error("Full error details:", JSON.stringify(geminiError, null, 2));
-      
-      // Fallback: Try without tools for simple conversation
-      try {
-        console.log("Attempting fallback to regular generateWithGemini...");
-        const fallbackPrompt = `${SYSTEM_PROMPT}
-
-Context: The recruiter is evaluating ${resumeCount} resume${resumeCount === 1 ? '' : 's'}.
-
-Conversation so far:
-${conversationHistory.map(m => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content}`).join('\n')}
-
-Latest user message: "${latestUserMessage}"
-
-Respond naturally and conversationally. If the user wants to evaluate resumes and has provided job criteria (role/skills), format your response like this:
-
-Perfect! I have the information needed:
-
-**Role:** [role or "Not specified"]
-**Required Skills:** [skills or "General"]
-**Job Description:** [summary]
-
-✅ Ready to evaluate! Click 'Start Evaluation' to begin analyzing the resumes.`;
-
-        const fallbackResponse = await generateWithGemini(fallbackPrompt);
-        const extractedCriteria = extractCriteriaFromText(fallbackResponse, messages);
-        
-        return NextResponse.json({
-          response: fallbackResponse,
-          criteria: extractedCriteria
-        });
-      } catch (fallbackError) {
-        console.error("Fallback also failed:", fallbackError);
-        return NextResponse.json({
-          response: "I apologize, but I'm having trouble processing your message right now. Could you please try again? If the issue persists, try rephrasing your message.",
-          criteria: null
-        });
-      }
-    }
-
-    // Check if AI wants to call the evaluate_resumes tool
+    // Step 2: If LLM called get_resumes tool
     if (result.toolCalls && result.toolCalls.length > 0) {
       const toolCall = result.toolCalls[0];
-      
-      if (toolCall.name === 'evaluate_resumes') {
-        const { role, skills, job_description } = toolCall.args;
-        
-        // Create criteria from tool call
-        const criteria: Criteria = {
-          role: role || 'Not specified',
-          skills: Array.isArray(skills) && skills.length > 0 ? skills : ['General'],
-          job_description: job_description || 'Resume evaluation based on provided criteria'
-        };
 
-        console.log('✅ Tool called! Auto-starting evaluation with criteria:', criteria);
+      if (toolCall.name === "get_resumes") {
+        console.log("🚀 Step 1: User message received:", latestUserMessage);
+        console.log("📞 Step 2: LLM called get_resumes tool");
 
-        // Generate a response confirming the evaluation is starting
-        const confirmationResponse = `🚀 **Starting Evaluation Now!**
+        // Step 3: Backend fetches resumes from Supabase
+        const { data: resumes, error } = await supabaseServer
+          .from("resumes")
+          .select("id, file_name, extracted_text")
+          .order("created_at", { ascending: false });
 
-I've extracted your requirements:
-📋 **Role:** ${criteria.role}
-💼 **Skills:** ${criteria.skills.join(', ')}
+        if (error || !resumes) {
+          return NextResponse.json({
+            response: "Failed to fetch resumes. Please try again.",
+            evaluations: [],
+          });
+        }
 
-⏳ Processing ${resumeCount} resume${resumeCount === 1 ? '' : 's'} now...`;
+        console.log(
+          `� Step 3: Fetched ${resumes.length} resumes from database`
+        );
 
-        // Always auto-start when tool is called
+        // Step 4: Send ALL resume data back to LLM for evaluation
+        const evaluationPrompt = `User Requirement: "${latestUserMessage}"
+
+I fetched ${resumes.length} resumes. Here is the complete data:
+
+${resumes
+  .map(
+    (r, idx) => `
+Resume ${idx + 1}:
+ID: ${r.id}
+Name: ${r.file_name}
+Content: ${r.extracted_text}
+---
+`
+  )
+  .join("\n")}`;
+
+        console.log(
+          "🤖 Step 4: Sending all resume data to LLM for evaluation..."
+        );
+
+        // LLM evaluates everything at once - with system context
+        const llmEvaluation = await generateWithTools(
+          `${SYSTEM_PROMPT}\n\n${evaluationPrompt}`,
+          [],
+          []
+        );
+
+        console.log("✅ Step 5: LLM returned evaluation results");
+        console.log("📄 Raw LLM Response:", llmEvaluation.response);
+
+        // Parse LLM response
+        let parsed;
+        try {
+          const jsonMatch = llmEvaluation.response.match(/\{[\s\S]*\}/);
+          parsed = jsonMatch
+            ? JSON.parse(jsonMatch[0])
+            : JSON.parse(llmEvaluation.response);
+          console.log(
+            "✅ Parsed successfully:",
+            JSON.stringify(parsed, null, 2)
+          );
+        } catch (parseError) {
+          console.error("❌ Failed to parse LLM evaluation:", parseError);
+          console.error("📄 Problematic response:", llmEvaluation.response);
+
+          // Return detailed error with actual LLM response for debugging
+          return NextResponse.json({
+            response: `❌ Failed to parse LLM response.\n\n**LLM returned:**\n${llmEvaluation.response.slice(
+              0,
+              500
+            )}\n\n**Error:** ${
+              parseError instanceof Error
+                ? parseError.message
+                : "Unknown parse error"
+            }`,
+            evaluations: [],
+            debug: {
+              rawResponse: llmEvaluation.response,
+              error:
+                parseError instanceof Error
+                  ? parseError.message
+                  : String(parseError),
+            },
+          });
+        }
+
+        const evaluations: EvaluationResult[] = [];
+
+        // Step 6: Save results to database and prepare response
+        for (const evalData of parsed.evaluations || []) {
+          try {
+            const resume = resumes.find((r) => r.id === evalData.resumeId);
+            if (!resume) continue;
+
+            // Check if it's a valid resume
+            const isValidResume = evalData.is_resume !== false; // Default to true if not specified
+
+            // If not a resume, override status and feedback
+            let status: "pass" | "fail" =
+              evalData.fit_score >= 50 ? "pass" : "fail";
+            let feedback = evalData.feedback;
+
+            if (!isValidResume) {
+              status = "fail";
+              feedback = "❌ Not a valid resume document";
+            }
+
+            // Save to database
+            await supabaseServer
+              .from("evaluations")
+              .delete()
+              .eq("resume_id", evalData.resumeId);
+            await supabaseServer.from("evaluations").insert({
+              resume_id: evalData.resumeId,
+              criteria: {
+                role: "Not specified",
+                skills: [],
+                job_description: latestUserMessage,
+                is_resume: isValidResume,
+              },
+              fit_score: evalData.fit_score,
+              missing_skills: evalData.missing_skills || [],
+              feedback: feedback || "No feedback",
+              raw_response: { ...evalData, ai_provider: "gemini" },
+            });
+
+            evaluations.push({
+              resumeId: evalData.resumeId,
+              resumeName: evalData.resumeName,
+              score: evalData.fit_score,
+              feedback: feedback,
+              missing_skills: evalData.missing_skills || [],
+              status,
+              extractedCriteria: {
+                role: "Not specified",
+                skills: [],
+              },
+            });
+          } catch (err) {
+            console.error(
+              `Error saving evaluation for resume ${evalData.resumeId}:`,
+              err
+            );
+          }
+        }
+
+        const passed = evaluations.filter((e) => e.status === "pass").length;
+        const failed = evaluations.filter((e) => e.status === "fail").length;
+
+        console.log(
+          `💾 Step 6: Saved ${evaluations.length} evaluations to database`
+        );
+        console.log(`🎉 Step 7: Complete! ${passed} passed, ${failed} failed`);
+
+        // Step 7: Return results to frontend
         return NextResponse.json({
-          response: confirmationResponse,
-          criteria: criteria,
-          autoStart: true  // Always true when tool is called
+          response: `✅ **Evaluation Complete!**
+
+📋 **Requirement:** ${latestUserMessage}
+
+📊 **Results:**
+- Total: ${evaluations.length}
+- Passed: ${passed}
+- Failed: ${failed}`,
+          evaluations,
         });
       }
     }
 
-    // If no tool call, just return the conversational response
-    // But try to extract criteria from the response text
-    const extractedCriteria = extractCriteriaFromText(result.response, messages);
-    
-    // FALLBACK: If we detected evaluation intent but no tool was called, force it
-    if (isEvaluationIntent && !extractedCriteria) {
-      console.log('⚠️ Evaluation intent detected but no tool call - forcing extraction');
-      const forcedCriteria = extractCriteriaFromText(latestUserMessage, messages);
-      
-      if (forcedCriteria) {
-        console.log('✅ Forced criteria extraction successful:', forcedCriteria);
-        
-        // Auto-start with forced criteria
-        const confirmationResponse = `🚀 **Starting Evaluation Now!**
-
-I've extracted your requirements:
-📋 **Role:** ${forcedCriteria.role}
-💼 **Skills:** ${forcedCriteria.skills.join(', ')}
-
-⏳ Processing ${resumeCount} resume${resumeCount === 1 ? '' : 's'} now...`;
-
-        return NextResponse.json({
-          response: confirmationResponse,
-          criteria: forcedCriteria,
-          autoStart: true
-        });
-      }
-    }
-    
+    // Regular conversation response (no tool call)
     return NextResponse.json({
-      response: result.response,
-      criteria: extractedCriteria
+      response: result.response || "How can I help you with resume evaluation?",
+      evaluations: [],
     });
-
   } catch (error) {
-    console.error("Error in chat-criteria API:", error);
-    const errorMessage = error instanceof Error ? error.message : "Failed to process chat message";
-    console.error("Error details:", errorMessage);
+    console.error("❌ ERROR in chat-criteria API:", error);
+
+    // Return detailed error for debugging
+    const errorMessage =
+      error instanceof Error ? error.message : "Internal server error";
+    console.error("Error message:", errorMessage);
+
     return NextResponse.json(
-      { error: errorMessage },
+      {
+        error: errorMessage,
+        details: error instanceof Error ? error.stack : String(error),
+      },
       { status: 500 }
     );
   }
-}
-
-// Helper function to extract criteria from conversation
-function extractCriteriaFromText(responseText: string, messages: ChatMessage[]): Criteria | null {
-  console.log('🔍 Attempting to extract criteria from response:', responseText.substring(0, 200) + '...');
-  
-  // Check if response contains the confirmation format
-  const roleMatch = responseText.match(/\*\*Role:\*\*\s*(.+?)(?:\n|$)/i);
-  const skillsMatch = responseText.match(/\*\*Required Skills:\*\*\s*(.+?)(?:\n|$)/i);
-  const descMatch = responseText.match(/\*\*Job Description:\*\*\s*(.+?)(?:\n|$)/i);
-  
-  if (roleMatch || skillsMatch) {
-    const role = roleMatch && !roleMatch[1].toLowerCase().includes('not specified') 
-      ? roleMatch[1].trim() 
-      : 'Not specified';
-    
-    const skillsRaw = skillsMatch ? skillsMatch[1].trim() : '';
-    const skills = skillsRaw && !skillsRaw.toLowerCase().includes('not specified') && skillsRaw.toLowerCase() !== 'general'
-      ? skillsRaw.split(/[,;]/).map(s => s.trim()).filter(s => s.length > 0)
-      : ['General'];
-    
-    const job_description = descMatch 
-      ? descMatch[1].trim()
-      : messages.filter(m => m.role === 'user').map(m => m.content).join(' ');
-    
-    // Accept criteria if we have either a role or specific skills
-    if (role !== 'Not specified' || skills[0] !== 'General') {
-      console.log('✅ Criteria extracted from formatted response:', { role, skills, job_description: job_description.substring(0, 100) });
-      return { role, skills, job_description };
-    }
-  }
-  
-  // Try to extract from conversation context
-  const conversationText = messages.filter(m => m.role === 'user').map(m => m.content).join(' ');
-  
-  // Look for explicit evaluation requests OR strong intent signals
-  const evaluationKeywords = /evaluate|start evaluation|find (me )?(candidates|developers|engineers|designers|analysts)|analyze resumes|check resumes|screen resumes|assess (candidates|resumes)/i;
-  const intentKeywords = /looking for|need|hiring|want|require|seeking|searching for/i;
-  
-  const hasEvaluationRequest = evaluationKeywords.test(conversationText) || evaluationKeywords.test(responseText);
-  const hasIntent = intentKeywords.test(conversationText);
-  
-  console.log('Intent detection:', { hasEvaluationRequest, hasIntent, conversationText: conversationText.substring(0, 150) });
-  
-  if (!hasEvaluationRequest && !hasIntent) {
-    console.log('⚠ No evaluation intent detected in conversation');
-    return null; // User hasn't requested evaluation yet
-  }
-  
-  // Extract role - look for common job titles
-  const rolePatterns = [
-    /(?:looking for|need|hiring|want|find|evaluate|seeking|require)\s+(?:a|an)?\s*([A-Z][a-zA-Z\s]+?(?:Engineer|Developer|Designer|Manager|Analyst|Scientist|Architect|Specialist|Consultant|Lead|Director|Administrator|Programmer|Tester)s?)\b/i,
-    /(?:role|position|job|title):\s*([A-Z][a-zA-Z\s]+)/i,
-    /\b(Senior|Junior|Lead|Staff|Principal)\s+([A-Z][a-zA-Z\s]+?(?:Engineer|Developer|Designer)s?)\b/i,
-    /\b(Software|Frontend|Backend|Full[- ]?Stack|Data|Machine Learning|DevOps|Cloud|Mobile|Web)\s+(Engineer|Developer|Architect)s?\b/i,
-    // More aggressive patterns for simple statements like "I want a Node.js developer"
-    /(?:want|need|looking for|find|seeking)\s+(?:a|an)?\s*([A-Za-z\.\s]+?\s+(?:developer|engineer|designer|programmer|architect)s?)\b/i,
-    /\b([A-Za-z\.\s]+?\s+(?:developer|engineer|designer|programmer|architect)s?)\b/i
-  ];
-  
-  let extractedRole = 'Not specified';
-  for (const pattern of rolePatterns) {
-    const match = conversationText.match(pattern);
-    if (match) {
-      // Get the captured group that has the role
-      extractedRole = (match[1] || match[2] || match[0]).trim();
-      // Clean up the role (capitalize properly)
-      extractedRole = extractedRole.split(' ').map(word => 
-        word.charAt(0).toUpperCase() + word.slice(1).toLowerCase()
-      ).join(' ');
-      console.log('Role found:', extractedRole);
-      break;
-    }
-  }
-  
-  // Extract skills - look for technologies, languages, frameworks
-  const skillKeywords = [
-    // Languages
-    'JavaScript', 'TypeScript', 'Python', 'Java', 'C#', 'C\\+\\+', 'Ruby', 'PHP', 'Go', 'Rust', 'Swift', 'Kotlin',
-    // Frontend
-    'React', 'Angular', 'Vue', 'Next\\.js', 'Svelte', 'HTML', 'CSS', 'Tailwind', 'jQuery',
-    // Backend
-    'Node\\.js', 'Node', 'Express', 'Django', 'Flask', 'Spring', 'ASP\\.NET', 'Laravel', 'FastAPI',
-    // Databases
-    'SQL', 'MongoDB', 'PostgreSQL', 'MySQL', 'Redis', 'DynamoDB', 'Elasticsearch', 'NoSQL',
-    // Cloud & DevOps
-    'AWS', 'Azure', 'GCP', 'Docker', 'Kubernetes', 'Jenkins', 'GitLab', 'GitHub Actions', 'CI/CD',
-    // Other
-    'Git', 'REST', 'GraphQL', 'Microservices', 'API', 'Agile', 'Scrum', 'Redux', 'Webpack'
-  ];
-  
-  const extractedSkills: string[] = [];
-  for (const skill of skillKeywords) {
-    if (new RegExp(skill, 'i').test(conversationText)) {
-      // Clean up the skill name (remove escaped characters)
-      const cleanSkill = skill.replace(/\\/g, '');
-      extractedSkills.push(cleanSkill);
-    }
-  }
-  
-  // Also look for skills mentioned directly (e.g., "Node.js developer" should extract "Node.js")
-  const directSkillMatch = conversationText.match(/\b(Node\.?js|React\.?js|Vue\.?js|Angular\.?js|Python|Java|JavaScript|TypeScript)\b/gi);
-  if (directSkillMatch) {
-    directSkillMatch.forEach(skill => {
-      const normalizedSkill = skill.replace(/\.?js$/i, '.js'); // Normalize to .js
-      if (!extractedSkills.some(s => s.toLowerCase() === normalizedSkill.toLowerCase())) {
-        extractedSkills.push(normalizedSkill);
-      }
-    });
-  }
-  
-  // Deduplicate skills (remove similar ones like "Node" if "Node.js" exists)
-  const deduplicatedSkills = extractedSkills.filter((skill, index, self) => {
-    // Keep only the first occurrence of each skill (case-insensitive)
-    const firstIndex = self.findIndex(s => s.toLowerCase() === skill.toLowerCase());
-    if (firstIndex !== index) return false;
-    
-    // Remove "Node" if "Node.js" exists
-    if (skill.toLowerCase() === 'node' && self.some(s => s.toLowerCase() === 'node.js')) {
-      return false;
-    }
-    return true;
-  });
-  
-  console.log('Skills found (deduplicated):', deduplicatedSkills);
-  
-  // Extract years of experience if mentioned
-  const expMatch = conversationText.match(/(\d+)\+?\s*years?\s+(?:of\s+)?experience/i);
-  const experience = expMatch ? `${expMatch[1]}+ years experience` : '';
-  
-  if (extractedRole !== 'Not specified' || deduplicatedSkills.length > 0) {
-    const job_description = conversationText.trim() || 'Resume evaluation based on extracted criteria';
-    console.log('✅ Criteria extracted from conversation:', { extractedRole, deduplicatedSkills, experience });
-    return {
-      role: extractedRole,
-      skills: deduplicatedSkills.length > 0 ? deduplicatedSkills : ['General'],
-      job_description: experience ? `${job_description}\n\nExperience: ${experience}` : job_description
-    };
-  }
-  
-  console.log('⚠ Could not extract sufficient criteria from conversation');
-  return null;
 }
