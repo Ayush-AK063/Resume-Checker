@@ -5,6 +5,7 @@ const nextConfig: NextConfig = {
   serverExternalPackages: ['pdf-parse'],
   // Enable Turbopack configuration
   turbopack: {},
+  // instrumentation.ts is now loaded automatically in Next.js 15+
 };
 
 export default nextConfig;
