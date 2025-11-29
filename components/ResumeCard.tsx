@@ -63,17 +63,13 @@ export default function ResumeCard({ resume, refreshKey, onDeleteSuccess }: Resu
 
   const toggleExpanded = () => {
     if (!isExpanded) {
-      // Always refresh data when expanding to show latest evaluations
+      // Fetch data when expanding
       fetchResumeData(true);
     }
     setIsExpanded(!isExpanded);
   };
 
-  // Fetch basic resume data on mount to show evaluation badge
-  useEffect(() => {
-    fetchResumeData();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [resume.id]);
+  // Removed automatic fetch on mount - only fetch when user expands the card
 
   // When parent signals a refresh (e.g. after evaluation completes), refetch resume data
   useEffect(() => {
