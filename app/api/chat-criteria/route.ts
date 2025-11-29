@@ -1,3 +1,4 @@
+export const runtime = 'nodejs';
 import { NextResponse } from "next/server";
 import { generateWithTools } from "@/lib/llm/gemini";
 import { supabaseServer } from "@/supabase/serverClient";
