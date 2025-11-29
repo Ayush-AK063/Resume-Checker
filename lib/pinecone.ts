@@ -1,18 +1,27 @@
 import { Pinecone } from "@pinecone-database/pinecone";
 
-// Initialize Pinecone client
-const pinecone = new Pinecone({
-  apiKey: process.env.PINECONE_API_KEY!,
-});
+// Lazy singleton to avoid build-time failures if env vars missing.
+let _pinecone: Pinecone | null = null;
+function getPineconeClient(): Pinecone {
+  if (_pinecone) return _pinecone;
+  const { PINECONE_API_KEY } = process.env;
+  if (!PINECONE_API_KEY) {
+    throw new Error("Pinecone API key missing (PINECONE_API_KEY). Set it before vector operations.");
+  }
+  _pinecone = new Pinecone({ apiKey: PINECONE_API_KEY });
+  return _pinecone;
+}
 
-// Get the index name from environment variable
-const indexName = process.env.PINECONE_INDEX_NAME || "resume-checker";
+// Index name resolved at runtime; allow override via env.
+function getIndexName(): string {
+  return process.env.PINECONE_INDEX_NAME || "resume-checker";
+}
 
 /**
  * Get the Pinecone index for resume storage
  */
 export async function getPineconeIndex() {
-  return pinecone.index(indexName);
+  return getPineconeClient().index(getIndexName());
 }
 
 /**

@@ -1,3 +1,4 @@
+export const runtime = 'nodejs';
 import { NextResponse } from "next/server";
 import { supabaseServer } from "@/supabase/serverClient";
 import { observe, updateActiveObservation, updateActiveTrace, startObservation } from "@langfuse/tracing";
